@@ -19,6 +19,8 @@ import (
 	clusterinformersv1 "open-cluster-management.io/api/client/cluster/informers/externalversions/cluster/v1"
 	clusterlisterv1 "open-cluster-management.io/api/client/cluster/listers/cluster/v1"
 	"open-cluster-management.io/sdk-go/pkg/basecontroller/factory"
+
+	commonhelpers "open-cluster-management.io/ocm/pkg/common/helpers"
 )
 
 // addonAnnotationController watches ManagedCluster annotation changes and syncs
@@ -59,7 +61,8 @@ func NewAddonAnnotationController(
 			if err != nil {
 				return
 			}
-			if addonAnnotationsChanged(oldAccessor.GetAnnotations(), newAccessor.GetAnnotations()) {
+			if addonAnnotationsChanged(oldAccessor.GetAnnotations(), newAccessor.GetAnnotations()) ||
+				commonhelpers.PropagatedLabelsChanged(oldAccessor.GetLabels(), newAccessor.GetLabels()) {
 				syncCtx.Queue().Add(newAccessor.GetName())
 			}
 		},
@@ -148,9 +151,11 @@ func (c *addonAnnotationController) sync(ctx context.Context, syncCtx factory.Sy
 			continue
 		}
 
-		// Sync addon annotations from cluster to addon
-		if updated, addonCopy := syncAddonAnnotations(addon, clusterAddonAnnotations); updated {
-			logger.V(2).Info("Updating addon annotations", "addon", addon.Name)
+		// Sync addon annotations and ownership labels from cluster to addon
+		updatedAnn, addonCopy := syncAddonAnnotations(addon, clusterAddonAnnotations)
+		updatedLabels, addonCopy := syncAddonOwnershipLabels(addonCopy, cluster.Labels)
+		if updatedAnn || updatedLabels {
+			logger.V(2).Info("Updating addon annotations/labels", "addon", addon.Name)
 			_, err = c.addonClient.AddonV1beta1().ManagedClusterAddOns(clusterName).Update(
 				ctx, addonCopy, metav1.UpdateOptions{})
 			if err != nil {
@@ -194,4 +199,32 @@ func syncAddonAnnotations(
 	}
 
 	return changed, addonCopy
+}
+
+// syncAddonOwnershipLabels copies tenancy/ownership labels from the ManagedCluster onto the MCA.
+// Removed ownership labels on the cluster are not deleted from the addon (avoid accidental
+// unlabeling of tenant-scoped resources).
+func syncAddonOwnershipLabels(
+	addon *addonv1beta1.ManagedClusterAddOn,
+	clusterLabels map[string]string,
+) (bool, *addonv1beta1.ManagedClusterAddOn) {
+	prop := commonhelpers.ExtractPropagatedLabels(clusterLabels)
+	if len(prop) == 0 {
+		return false, addon
+	}
+	addonCopy := addon.DeepCopy()
+	if addonCopy.Labels == nil {
+		addonCopy.Labels = map[string]string{}
+	}
+	changed := false
+	for k, v := range prop {
+		if existing, exists := addonCopy.Labels[k]; !exists || existing != v {
+			addonCopy.Labels[k] = v
+			changed = true
+		}
+	}
+	if !changed {
+		return false, addon
+	}
+	return true, addonCopy
 }

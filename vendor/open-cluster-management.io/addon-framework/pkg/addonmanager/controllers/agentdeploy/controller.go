@@ -346,6 +346,20 @@ func (c *addonDeployController) updateAddon(ctx context.Context, new, old *addon
 func (c *addonDeployController) applyWork(ctx context.Context, appliedType string,
 	work *workapiv1.ManifestWork, addon *addonapiv1beta1.ManagedClusterAddOn) (*workapiv1.ManifestWork, error) {
 
+	// Propagate tenancy/ownership labels from ManagedClusterAddOn onto ManifestWork
+	// so Create/Apply hits the same tenant partition as the parent addon.
+	if work.Labels == nil {
+		work.Labels = map[string]string{}
+	}
+	for k, v := range addon.GetLabels() {
+		if !isPropagatedOwnershipLabel(k) {
+			continue
+		}
+		if _, exists := work.Labels[k]; !exists {
+			work.Labels[k] = v
+		}
+	}
+
 	work, err := c.workApplier.Apply(ctx, work)
 	if err != nil {
 		meta.SetStatusCondition(&addon.Status.Conditions, metav1.Condition{
@@ -387,6 +401,16 @@ func (c *addonDeployController) applyWork(ctx context.Context, appliedType strin
 	}
 
 	return work, nil
+}
+
+// isPropagatedOwnershipLabel matches tenancy labels copied from parent addons onto ManifestWorks.
+func isPropagatedOwnershipLabel(key string) bool {
+	for _, prefix := range []string{"gmaas.io/", "rafay.io/", "tenancy.k8smgmt.io/"} {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 type buildDeployWorkFunc func(

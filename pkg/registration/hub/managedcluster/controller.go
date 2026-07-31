@@ -223,8 +223,13 @@ func (c *managedClusterController) sync(ctx context.Context, syncCtx factory.Syn
 			Labels: func() map[string]string {
 				labels := make(map[string]string)
 				if c.labels != nil {
-					labels = c.labels
+					for k, v := range c.labels {
+						labels[k] = v
+					}
 				}
+				// Propagate tenancy/ownership labels from ManagedCluster so the
+				// cluster namespace Create/Apply routes to the same tenant partition.
+				labels = commonhelper.MergePropagatedLabels(labels, managedCluster.Labels)
 				labels[v1.ClusterNameLabelKey] = managedClusterName
 				return labels
 			}()},

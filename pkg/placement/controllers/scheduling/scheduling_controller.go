@@ -38,6 +38,7 @@ import (
 	"open-cluster-management.io/sdk-go/pkg/basecontroller/factory"
 	"open-cluster-management.io/sdk-go/pkg/patcher"
 
+	commonhelpers "open-cluster-management.io/ocm/pkg/common/helpers"
 	"open-cluster-management.io/ocm/pkg/common/queue"
 	"open-cluster-management.io/ocm/pkg/placement/controllers/framework"
 	"open-cluster-management.io/ocm/pkg/placement/controllers/metrics"
@@ -494,15 +495,19 @@ func (c *schedulingController) generateDecision(
 			Version: clusterapiv1beta1.GroupVersion.Version,
 			Kind:    "Placement",
 		})
+		decisionLabels := map[string]string{
+			clusterapiv1beta1.PlacementLabel:          placement.Name,
+			clusterapiv1beta1.DecisionGroupNameLabel:  clusterDecisionGroup.decisionGroupName,
+			clusterapiv1beta1.DecisionGroupIndexLabel: fmt.Sprint(decisionGroupIndex),
+		}
+		// Propagate tenancy/ownership labels from Placement so Create/Patch go through
+		// the same tenant partition as the parent (multi-tenant hubs).
+		decisionLabels = commonhelpers.MergePropagatedLabels(decisionLabels, placement.Labels)
 		placementDecision := &clusterapiv1beta1.PlacementDecision{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      placementDecisionName,
-				Namespace: placement.Namespace,
-				Labels: map[string]string{
-					clusterapiv1beta1.PlacementLabel:          placement.Name,
-					clusterapiv1beta1.DecisionGroupNameLabel:  clusterDecisionGroup.decisionGroupName,
-					clusterapiv1beta1.DecisionGroupIndexLabel: fmt.Sprint(decisionGroupIndex),
-				},
+				Name:            placementDecisionName,
+				Namespace:       placement.Namespace,
+				Labels:          decisionLabels,
 				OwnerReferences: []metav1.OwnerReference{*owner},
 			},
 			Status: clusterapiv1beta1.PlacementDecisionStatus{

@@ -21,6 +21,7 @@ import (
 	"open-cluster-management.io/sdk-go/pkg/basecontroller/factory"
 
 	addonindex "open-cluster-management.io/ocm/pkg/addon/index"
+	commonhelpers "open-cluster-management.io/ocm/pkg/common/helpers"
 )
 
 type managedClusterAddonInstallReconciler struct {
@@ -81,8 +82,8 @@ func (d *managedClusterAddonInstallReconciler) reconcile(
 			Spec: addonv1beta1.ManagedClusterAddOnSpec{},
 		}
 
-		// Copy addon annotations from the managed cluster to the addon
-		addonAnnotations, err := d.getAddonAnnotationsFromCluster(cluster)
+		// Copy addon annotations and tenancy/ownership labels from the managed cluster
+		addonAnnotations, clusterLabels, err := d.getAddonMetaFromCluster(cluster)
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -90,6 +91,7 @@ func (d *managedClusterAddonInstallReconciler) reconcile(
 		if len(addonAnnotations) > 0 {
 			addon.Annotations = addonAnnotations
 		}
+		addon.Labels = commonhelpers.MergePropagatedLabels(addon.Labels, clusterLabels)
 
 		_, err = d.addonClient.AddonV1beta1().ManagedClusterAddOns(cluster).Create(ctx, addon, metav1.CreateOptions{})
 		if err != nil && !errors.IsAlreadyExists(err) {
@@ -107,13 +109,12 @@ func (d *managedClusterAddonInstallReconciler) reconcile(
 	return cma, reconcileContinue, utilerrors.NewAggregate(errs)
 }
 
-// getAddonAnnotationsFromCluster returns all annotations with the "addon.open-cluster-management.io" prefix
-// from the ManagedCluster, so they can be appended to the ManagedClusterAddOn.
-func (d *managedClusterAddonInstallReconciler) getAddonAnnotationsFromCluster(
-	clusterName string) (map[string]string, error) {
+// getAddonMetaFromCluster returns addon-prefix annotations and ownership labels from the ManagedCluster.
+func (d *managedClusterAddonInstallReconciler) getAddonMetaFromCluster(
+	clusterName string) (annotations map[string]string, labels map[string]string, err error) {
 	cluster, err := d.managedClusterLister.Get(clusterName)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	addonAnnotations := map[string]string{}
@@ -122,7 +123,7 @@ func (d *managedClusterAddonInstallReconciler) getAddonAnnotationsFromCluster(
 			addonAnnotations[k] = v
 		}
 	}
-	return addonAnnotations, nil
+	return addonAnnotations, cluster.Labels, nil
 }
 
 func (d *managedClusterAddonInstallReconciler) getAllDecisions(
