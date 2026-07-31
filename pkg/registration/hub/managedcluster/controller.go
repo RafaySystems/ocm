@@ -117,7 +117,7 @@ func NewManagedClusterController(
 
 func (c *managedClusterController) sync(ctx context.Context, syncCtx factory.SyncContext, managedClusterName string) error {
 	logger := klog.FromContext(ctx).WithValues("managedClusterName", managedClusterName)
-	logger.V(4).Info("Reconciling ManagedCluster")
+	logger.Info("Reconciling ManagedCluster")
 	ctx = klog.NewContext(ctx, logger)
 	managedCluster, err := c.clusterLister.Get(managedClusterName)
 	if apierrors.IsNotFound(err) {

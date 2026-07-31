@@ -1,16 +1,48 @@
+# Build the registration and server binaries (hub registration server / gRPC server).
+# Build context MUST be the directory that contains both ocm/ and sdk-go/ (e.g. monorepo root).
+# go.mod may use: replace open-cluster-management.io/sdk-go => ../sdk-go
+#
+# From monorepo root (parent of ocm):
+#   docker build -f ocm/build/Dockerfile.registration --platform=linux/amd64 -t <image> .
+#
+# From ocm/ (this repo only, no sibling sdk-go): make image-registration IMAGE_BUILD_CONTEXT=.
+#   (requires a standard ocm layout; use plain Dockerfile copy — see IMAGE_BUILD_CONTEXT in Makefile)
+#
 FROM golang:1.25-bookworm AS builder
 ARG OS=linux
 ARG ARCH=amd64
-WORKDIR /go/src/open-cluster-management.io/ocm
-COPY . .
-ENV GO_PACKAGE open-cluster-management.io/ocm
+ARG SOURCE_GIT_TAG=v0.0.0-unknown
+ARG SOURCE_GIT_COMMIT=unknown
+ARG SOURCE_GIT_TREE_STATE=dirty
 
-RUN GOOS=${OS} \
+WORKDIR /workspace
+
+# Copy only go.mod/go.sum and sdk-go first so go mod download is cached when source changes.
+COPY ocm/go.mod ocm/go.sum /workspace/ocm/
+COPY sdk-go /workspace/sdk-go
+
+WORKDIR /workspace/ocm
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+COPY ocm /workspace/ocm
+
+WORKDIR /workspace/ocm
+ENV GO_PACKAGE=open-cluster-management.io/ocm \
+    SOURCE_GIT_TAG=${SOURCE_GIT_TAG} \
+    SOURCE_GIT_COMMIT=${SOURCE_GIT_COMMIT} \
+    SOURCE_GIT_TREE_STATE=${SOURCE_GIT_TREE_STATE}
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    GOOS=${OS} \
     GOARCH=${ARCH} \
     GO_BUILD_PACKAGES=./cmd/registration \
     make build --warn-undefined-variables
 
-RUN GOOS=${OS} \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    GOOS=${OS} \
     GOARCH=${ARCH} \
     GO_BUILD_PACKAGES=./cmd/server \
     make build --warn-undefined-variables
@@ -18,7 +50,7 @@ RUN GOOS=${OS} \
 FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
 ENV USER_UID=10001
 
-COPY --from=builder /go/src/open-cluster-management.io/ocm/registration /
-COPY --from=builder /go/src/open-cluster-management.io/ocm/server /
+COPY --from=builder /workspace/ocm/registration /
+COPY --from=builder /workspace/ocm/server /
 
 USER ${USER_UID}

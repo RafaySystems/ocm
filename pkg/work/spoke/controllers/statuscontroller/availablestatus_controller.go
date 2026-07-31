@@ -78,7 +78,7 @@ func NewAvailableStatusController(
 
 func (c *AvailableStatusController) sync(ctx context.Context, controllerContext factory.SyncContext, manifestWorkName string) error {
 	logger := klog.FromContext(ctx).WithValues("manifestWorkName", manifestWorkName)
-	logger.V(4).Info("Reconciling ManifestWork")
+	logger.V(0).Info("AvailableStatusController: sync started (availability + status feedback)")
 
 	// sync a particular manifestwork
 	manifestWork, err := c.manifestWorkLister.Get(manifestWorkName)
@@ -105,15 +105,18 @@ func (c *AvailableStatusController) sync(ctx context.Context, controllerContext 
 }
 
 func (c *AvailableStatusController) syncManifestWork(ctx context.Context, controllerContext factory.SyncContext, originalManifestWork *workapiv1.ManifestWork) error {
+	logger := klog.FromContext(ctx)
 	manifestWork := originalManifestWork.DeepCopy()
 
 	// do nothing when finalizer is not added.
 	if !commonhelper.HasFinalizer(manifestWork.Finalizers, workapiv1.ManifestWorkFinalizer) {
+		logger.V(0).Info("AvailableStatusController: skip, no ManifestWork finalizer", "manifestWork", manifestWork.Name)
 		return nil
 	}
 
 	// wait until work has the applied condition.
 	if cond := meta.FindStatusCondition(manifestWork.Status.Conditions, workapiv1.WorkApplied); cond == nil {
+		logger.V(0).Info("AvailableStatusController: skip, WorkApplied condition not yet set", "manifestWork", manifestWork.Name)
 		return nil
 	}
 
@@ -142,6 +145,14 @@ func (c *AvailableStatusController) syncManifestWork(ctx context.Context, contro
 		// Read status of the resource according to feedback rules.
 		values, statusFeedbackCondition := c.getFeedbackValues(obj, option)
 		valuesChanged := !equality.Semantic.DeepEqual(manifest.StatusFeedbacks.Values, values)
+		logger.V(0).Info("AvailableStatusController: status feedback",
+			"manifestWork", manifestWork.Name,
+			"manifestIndex", index,
+			"group", manifest.ResourceMeta.Group,
+			"resource", manifest.ResourceMeta.Resource,
+			"name", manifest.ResourceMeta.Name,
+			"feedbackReason", statusFeedbackCondition.Reason,
+			"valuesChanged", valuesChanged)
 		if valuesChanged {
 			meta.RemoveStatusCondition(manifestConditions, statusFeedbackCondition.Type)
 		}
@@ -167,7 +178,11 @@ func (c *AvailableStatusController) syncManifestWork(ctx context.Context, contro
 
 	// update status of manifestwork. if this conflicts, try again later
 	_, err := c.patcher.PatchStatus(ctx, manifestWork, manifestWork.Status, originalManifestWork.Status)
-	return err
+	if err != nil {
+		return err
+	}
+	logger.V(0).Info("AvailableStatusController: patched ManifestWork status (availability + feedback + condition rules)", "manifestWork", manifestWork.Name)
+	return nil
 }
 
 func (c *AvailableStatusController) getFeedbackValues(

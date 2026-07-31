@@ -53,24 +53,92 @@ endif
 GO_TEST_PACKAGES :=./pkg/...
 GO_TEST_FLAGS := -race -coverprofile=coverage.out
 
-IMAGE_REGISTRY?=quay.io/open-cluster-management
-IMAGE_TAG?=latest
+IMAGE_REGISTRY?=registry.dev.rafay-edge.net/rafay
+IMAGE_TAG?=0.0.1-$(shell date +%Y%m%d%H%M%S)
 
-OPERATOR_IMAGE_NAME ?= $(IMAGE_REGISTRY)/registration-operator:$(IMAGE_TAG)
+OPERATOR_IMAGE_NAME ?= $(IMAGE_REGISTRY)/ocm-registration-operator:$(IMAGE_TAG)
 # WORK_IMAGE can be set in the env to override calculated value
-WORK_IMAGE ?= $(IMAGE_REGISTRY)/work:$(IMAGE_TAG)
+WORK_IMAGE ?= $(IMAGE_REGISTRY)/ocm-work:$(IMAGE_TAG)
 # REGISTRATION_IMAGE can be set in the env to override calculated value
-REGISTRATION_IMAGE ?= $(IMAGE_REGISTRY)/registration:$(IMAGE_TAG)
+REGISTRATION_IMAGE ?= $(IMAGE_REGISTRY)/ocm-registration:$(IMAGE_TAG)
 # PLACEMENT_IMAGE can be set in the env to override calculated value
-PLACEMENT_IMAGE ?= $(IMAGE_REGISTRY)/placement:$(IMAGE_TAG)
+PLACEMENT_IMAGE ?= $(IMAGE_REGISTRY)/ocm-placement:$(IMAGE_TAG)
 # ADDON_MANAGER_IMAGE can be set in the env to override calculated value
-ADDON_MANAGER_IMAGE ?= $(IMAGE_REGISTRY)/addon-manager:$(IMAGE_TAG)
+ADDON_MANAGER_IMAGE ?= $(IMAGE_REGISTRY)/ocm-addon-manager:$(IMAGE_TAG)
 
-$(call build-image,registration,$(REGISTRATION_IMAGE),./build/Dockerfile.registration,.)
+# Docker CLI for amd64 and push targets (override if needed, e.g. podman)
+DOCKER ?= docker
+
+# Registration / registration-operator: monorepo (.. + COPY ocm/, sdk-go/) vs ocm-only context (.).
+ifeq ($(origin IMAGE_BUILD_CONTEXT),undefined)
+ifeq ($(wildcard ../sdk-go/go.mod),)
+IMAGE_BUILD_CONTEXT := .
+REGISTRATION_DOCKERFILE := ./build/Dockerfile.registration.ocm-root
+REGISTRATION_OPERATOR_DOCKERFILE := ./build/Dockerfile.registration-operator.ocm-root
+else
+IMAGE_BUILD_CONTEXT := ..
+REGISTRATION_DOCKERFILE := ./build/Dockerfile.registration
+REGISTRATION_OPERATOR_DOCKERFILE := ./build/Dockerfile.registration-operator
+endif
+else
+ifeq ($(IMAGE_BUILD_CONTEXT),..)
+REGISTRATION_DOCKERFILE := ./build/Dockerfile.registration
+REGISTRATION_OPERATOR_DOCKERFILE := ./build/Dockerfile.registration-operator
+else
+REGISTRATION_DOCKERFILE := ./build/Dockerfile.registration.ocm-root
+REGISTRATION_OPERATOR_DOCKERFILE := ./build/Dockerfile.registration-operator.ocm-root
+endif
+endif
+
+$(call build-image,registration,$(REGISTRATION_IMAGE),$(REGISTRATION_DOCKERFILE),$(IMAGE_BUILD_CONTEXT))
 $(call build-image,work,$(WORK_IMAGE),./build/Dockerfile.work,.)
 $(call build-image,placement,$(PLACEMENT_IMAGE),./build/Dockerfile.placement,.)
-$(call build-image,registration-operator,$(OPERATOR_IMAGE_NAME),./build/Dockerfile.registration-operator,.)
+$(call build-image,registration-operator,$(OPERATOR_IMAGE_NAME),$(REGISTRATION_OPERATOR_DOCKERFILE),$(IMAGE_BUILD_CONTEXT))
 $(call build-image,addon-manager,$(ADDON_MANAGER_IMAGE),./build/Dockerfile.addon,.)
+
+# linux/amd64 images (e.g. Apple Silicon → x86_64 cluster). Monorepo Dockerfiles need BuildKit (cache mounts).
+#   DOCKER_BUILDKIT=1 make image-registration-amd64 image-registration-operator-amd64
+image-registration-amd64:
+	$(DOCKER) build --platform=linux/amd64 -t $(REGISTRATION_IMAGE) -f $(REGISTRATION_DOCKERFILE) $(IMAGE_BUILD_CONTEXT)
+	echo $(REGISTRATION_IMAGE)
+	$(DOCKER) push $(REGISTRATION_IMAGE)
+.PHONY: image-registration-amd64
+
+image-work-amd64:
+	$(DOCKER) build --platform=linux/amd64 -t $(WORK_IMAGE) -f ./build/Dockerfile.work .
+	echo $(WORK_IMAGE)
+	$(DOCKER) push $(WORK_IMAGE)
+.PHONY: image-work-amd64
+
+image-placement-amd64:
+	$(DOCKER) build --platform=linux/amd64 -t $(PLACEMENT_IMAGE) -f ./build/Dockerfile.placement .
+	echo $(PLACEMENT_IMAGE)
+	$(DOCKER) push $(PLACEMENT_IMAGE)
+.PHONY: image-placement-amd64
+
+image-registration-operator-amd64:
+	$(DOCKER) build --platform=linux/amd64 -t $(OPERATOR_IMAGE_NAME) -f $(REGISTRATION_OPERATOR_DOCKERFILE) $(IMAGE_BUILD_CONTEXT)
+	echo $(OPERATOR_IMAGE_NAME)
+	$(DOCKER) push $(OPERATOR_IMAGE_NAME)
+.PHONY: image-registration-operator-amd64
+
+image-addon-manager-amd64:
+	$(DOCKER) build --platform=linux/amd64 -t $(ADDON_MANAGER_IMAGE) -f ./build/Dockerfile.addon .
+	echo $(ADDON_MANAGER_IMAGE)
+	$(DOCKER) push $(ADDON_MANAGER_IMAGE)
+.PHONY: image-addon-manager-amd64
+
+# All component images for linux/amd64 (enable BuildKit for registration Dockerfiles).
+images-amd64: image-registration-amd64 image-work-amd64 image-placement-amd64 image-registration-operator-amd64 image-addon-manager-amd64
+.PHONY: images-amd64
+
+push-registration:
+	$(DOCKER) push $(REGISTRATION_IMAGE)
+.PHONY: push-registration
+
+push-registration-operator:
+	$(DOCKER) push $(OPERATOR_IMAGE_NAME)
+.PHONY: push-registration-operator
 
 copy-crd: ensure-yaml-patch
 	bash -x hack/copy-crds.sh $(YAML_PATCH)

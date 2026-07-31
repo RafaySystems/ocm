@@ -13,6 +13,7 @@ import (
 	corev1informers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
 	kevents "k8s.io/client-go/tools/events"
+	"k8s.io/klog/v2"
 	aboutv1alpha1informer "sigs.k8s.io/about-api/pkg/generated/informers/externalversions/apis/v1alpha1"
 
 	clientset "open-cluster-management.io/api/client/cluster/clientset/versioned"
@@ -135,6 +136,9 @@ func newManagedClusterStatusController(
 // sync updates managed cluster available condition by checking kube-apiserver health on managed cluster.
 // if the kube-apiserver is health, it will ensure that managed cluster resources and version are up to date.
 func (c *managedClusterStatusController) sync(ctx context.Context, syncCtx factory.SyncContext, _ string) error {
+	logger := klog.FromContext(ctx).WithValues("managedCluster", c.clusterName)
+	logger.V(0).Info("ManagedClusterStatusController: sync started (spoke → hub ManagedCluster status)")
+
 	cluster, err := c.hubClusterLister.Get(c.clusterName)
 	if err != nil {
 		return fmt.Errorf("unable to get managed cluster %q from hub: %w", c.clusterName, err)
@@ -142,13 +146,16 @@ func (c *managedClusterStatusController) sync(ctx context.Context, syncCtx facto
 
 	newCluster := cluster.DeepCopy()
 	var errs []error
-	for _, reconciler := range c.reconcilers {
+	for i, reconciler := range c.reconcilers {
+		name := fmt.Sprintf("%T", reconciler)
 		var state reconcileState
 		newCluster, state, err = reconciler.reconcile(ctx, syncCtx, newCluster)
 		if err != nil {
+			logger.Error(err, "ManagedClusterStatusController: reconciler failed", "reconciler", name, "index", i)
 			errs = append(errs, err)
 		}
 		if state == reconcileStop {
+			logger.V(0).Info("ManagedClusterStatusController: reconciler chain stopped early", "reconciler", name, "index", i)
 			break
 		}
 	}
@@ -156,15 +163,17 @@ func (c *managedClusterStatusController) sync(ctx context.Context, syncCtx facto
 	// check if managedcluster's clock is out of sync, if so, the agent will not be able to update the status of managed cluster.
 	outOfSynced := meta.IsStatusConditionFalse(newCluster.Status.Conditions, clusterv1.ManagedClusterConditionClockSynced)
 	if outOfSynced {
+		logger.Info("ManagedClusterStatusController: clock out of sync on hub ManagedCluster; skipping PatchStatus until ClockSynced is True")
 		syncCtx.Recorder().Eventf(ctx, "ClockOutOfSync", "The managed cluster's clock is out of sync, the agent will not be able to update the status of managed cluster.")
 		return fmt.Errorf("the managed cluster's clock is out of sync, the agent will not be able to update the status of managed cluster")
 	}
 
 	changed, err := c.patcher.PatchStatus(ctx, newCluster, newCluster.Status, cluster.Status)
 	if err != nil {
+		logger.Error(err, "ManagedClusterStatusController: PatchStatus to hub failed")
 		errs = append(errs, err)
-	}
-	if changed {
+	} else if changed {
+		logger.V(0).Info("ManagedClusterStatusController: patched hub ManagedCluster status (capacity/version/claims/conditions from spoke)")
 		c.sendAvailableConditionEvent(cluster, newCluster)
 	}
 	return errors.NewAggregate(errs)

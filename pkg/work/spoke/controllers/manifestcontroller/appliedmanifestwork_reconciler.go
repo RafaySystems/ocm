@@ -35,7 +35,8 @@ func (m *appliedManifestWorkReconciler) reconcile(
 	manifestWork *workapiv1.ManifestWork,
 	appliedManifestWork *workapiv1.AppliedManifestWork,
 	results []applyResult) (*workapiv1.ManifestWork, *workapiv1.AppliedManifestWork, []applyResult, error) {
-	logger := klog.FromContext(ctx)
+	logger := klog.FromContext(ctx).WithValues("manifestWork", manifestWork.Name, "reconciler", "appliedManifestWorkReconciler")
+	logger.V(0).Info("appliedManifestWorkReconciler: syncing AppliedManifestWork resource status")
 	if !appliedManifestWork.DeletionTimestamp.IsZero() {
 		return manifestWork, appliedManifestWork, results, nil
 	}

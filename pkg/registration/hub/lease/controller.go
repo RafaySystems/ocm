@@ -13,6 +13,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	coordlisters "k8s.io/client-go/listers/coordination/v1"
 	kevents "k8s.io/client-go/tools/events"
+	"k8s.io/klog/v2"
 	"k8s.io/utils/pointer"
 
 	clientset "open-cluster-management.io/api/client/cluster/clientset/versioned"
@@ -72,9 +73,12 @@ func NewClusterLeaseController(
 // sync checks the lease of each cluster on hub, which is accepted or previously accepted, to determine whether
 // the managed cluster is available.
 func (c *leaseController) sync(ctx context.Context, syncCtx factory.SyncContext, clusterName string) error {
+	logger := klog.FromContext(ctx).WithValues("managedCluster", clusterName)
+	logger.V(0).Info("ManagedClusterLeaseController: sync started")
+
 	cluster, err := c.clusterLister.Get(clusterName)
 	if errors.IsNotFound(err) {
-		// the cluster is not found, do nothing
+		logger.V(0).Info("ManagedClusterLeaseController: ManagedCluster not found, skipping")
 		return nil
 	}
 	if err != nil {
@@ -83,7 +87,7 @@ func (c *leaseController) sync(ctx context.Context, syncCtx factory.SyncContext,
 
 	if cond := meta.FindStatusCondition(cluster.Status.Conditions,
 		clusterv1.ManagedClusterConditionHubAccepted); cond == nil {
-		// cluster was never accepted, skip it.
+		logger.V(0).Info("ManagedClusterLeaseController: cluster not hub-accepted, skipping lease check")
 		return nil
 	}
 
@@ -91,10 +95,14 @@ func (c *leaseController) sync(ctx context.Context, syncCtx factory.SyncContext,
 	if errors.IsNotFound(err) {
 		if !cluster.DeletionTimestamp.IsZero() {
 			// the lease is not found and the cluster is deleting, update the cluster to unknown immediately
+			logger.Info("ManagedClusterLeaseController: lease missing while cluster deleting, setting Available Unknown",
+				"namespace", cluster.Name, "lease", leaseName)
 			return c.updateClusterStatus(ctx, cluster)
 		}
 
 		// the lease is not found, try to create it
+		logger.Info("ManagedClusterLeaseController: lease not found, creating placeholder lease",
+			"namespace", cluster.Name, "lease", leaseName)
 		lease := &coordv1.Lease{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      leaseName,
@@ -107,6 +115,9 @@ func (c *leaseController) sync(ctx context.Context, syncCtx factory.SyncContext,
 			},
 		}
 		_, err := c.kubeClient.CoordinationV1().Leases(cluster.Name).Create(ctx, lease, metav1.CreateOptions{})
+		if err != nil {
+			logger.Error(err, "ManagedClusterLeaseController: failed to create lease", "namespace", cluster.Name, "lease", leaseName)
+		}
 		return err
 	}
 	if err != nil {
@@ -123,6 +134,11 @@ func (c *leaseController) sync(ctx context.Context, syncCtx factory.SyncContext,
 	leaseExpired := !now.Before(observedLease.Spec.RenewTime.Add(gracePeriod))
 
 	if leaseExpired {
+		logger.Info("ManagedClusterLeaseController: lease expired (registration agent not renewing in time), setting Available Unknown",
+			"namespace", cluster.Name,
+			"renewTime", observedLease.Spec.RenewTime.Time,
+			"gracePeriod", gracePeriod,
+			"now", now)
 		// the lease is not updated constantly, change the cluster available condition to unknown
 		if err := c.updateClusterStatus(ctx, cluster); err != nil {
 			return err
@@ -132,6 +148,10 @@ func (c *leaseController) sync(ctx context.Context, syncCtx factory.SyncContext,
 	} else {
 		// Lease is fresh, requeue exactly when it will expire to detect expiration immediately
 		timeUntilExpiry := observedLease.Spec.RenewTime.Add(gracePeriod).Sub(now)
+		logger.V(0).Info("ManagedClusterLeaseController: lease fresh, requeue before expiry",
+			"namespace", cluster.Name,
+			"renewTime", observedLease.Spec.RenewTime.Time,
+			"requeueAfter", timeUntilExpiry)
 		syncCtx.Queue().AddAfter(clusterName, timeUntilExpiry)
 	}
 
@@ -139,8 +159,10 @@ func (c *leaseController) sync(ctx context.Context, syncCtx factory.SyncContext,
 }
 
 func (c *leaseController) updateClusterStatus(ctx context.Context, cluster *clusterv1.ManagedCluster) error {
+	logger := klog.FromContext(ctx).WithValues("managedCluster", cluster.Name)
 	if meta.IsStatusConditionPresentAndEqual(cluster.Status.Conditions, clusterv1.ManagedClusterConditionAvailable, metav1.ConditionUnknown) {
 		// the managed cluster available condition alreay is unknown, do nothing
+		logger.V(0).Info("ManagedClusterLeaseController: Available already Unknown, skipping status patch")
 		return nil
 	}
 
@@ -153,11 +175,16 @@ func (c *leaseController) updateClusterStatus(ctx context.Context, cluster *clus
 	})
 
 	updated, err := c.patcher.PatchStatus(ctx, newCluster, newCluster.Status, cluster.Status)
+	if err != nil {
+		logger.Error(err, "ManagedClusterLeaseController: PatchStatus failed for Available Unknown")
+		return err
+	}
 	if updated {
+		logger.Info("ManagedClusterLeaseController: patched ManagedCluster Available to Unknown (lease update stopped)")
 		newCluster.SetNamespace(newCluster.Name)
 		c.mcEventRecorder.Eventf(newCluster, nil, corev1.EventTypeWarning, "AvailableUnknown", "AvailableUnknown",
 			"The %s is successfully imported. However, the connection check from the managed cluster to the hub cluster has failed", cluster.Name)
 	}
 
-	return err
+	return nil
 }

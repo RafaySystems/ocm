@@ -6,6 +6,29 @@ import (
 	"github.com/spf13/pflag"
 )
 
+func TestInsecureSkipTLSVerifyFromEnv(t *testing.T) {
+	cases := []struct {
+		env      string
+		wantSkip bool
+	}{
+		{env: "", wantSkip: true},
+		{env: "TRUE", wantSkip: true},
+		{env: "1", wantSkip: true},
+		{env: "yes", wantSkip: true},
+		{env: "false", wantSkip: false},
+		{env: "0", wantSkip: false},
+		{env: "no", wantSkip: false},
+	}
+	for _, c := range cases {
+		t.Run(c.env, func(t *testing.T) {
+			t.Setenv(envGRPCInsecureSkipTLSVerify, c.env)
+			if got := insecureSkipTLSVerifyFromEnv(); got != c.wantSkip {
+				t.Fatalf("insecureSkipTLSVerifyFromEnv() = %v, want %v", got, c.wantSkip)
+			}
+		})
+	}
+}
+
 func TestValidate(t *testing.T) {
 	cases := []struct {
 		name        string

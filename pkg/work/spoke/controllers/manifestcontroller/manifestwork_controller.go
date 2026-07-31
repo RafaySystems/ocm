@@ -127,7 +127,7 @@ func NewManifestWorkController(
 // 2. Resources defined in manifest changed on spoke
 func (m *ManifestWorkController) sync(ctx context.Context, controllerContext factory.SyncContext, manifestWorkName string) error {
 	logger := klog.FromContext(ctx).WithValues("manifestWorkName", manifestWorkName)
-	logger.V(5).Info("Reconciling ManifestWork")
+	logger.V(0).Info("ManifestWorkController: sync started")
 
 	oldManifestWork, err := m.manifestWorkLister.Get(manifestWorkName)
 	if apierrors.IsNotFound(err) {
@@ -169,9 +169,10 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 	var requeueTime = wait.Jitter(ResyncInterval, 0.5)
 	var errs []error
 	var results []applyResult
-	for _, reconciler := range m.reconcilers {
+	for i, reconciler := range m.reconcilers {
 		manifestWork, newAppliedManifestWork, results, err = reconciler.reconcile(
 			ctx, controllerContext, manifestWork, newAppliedManifestWork, results)
+		logger.V(0).Info("ManifestWorkController: reconciler finished", "reconciler", fmt.Sprintf("%T", reconciler), "index", i, "err", err != nil)
 		var rqe commonhelper.RequeueError
 		if err != nil && errors.As(err, &rqe) {
 			if requeueTime > rqe.RequeueTime {
@@ -193,6 +194,8 @@ func (m *ManifestWorkController) sync(ctx context.Context, controllerContext fac
 	if err != nil {
 		return err
 	}
+
+	logger.V(0).Info("ManifestWorkController: patched ManifestWork and AppliedManifestWork status on spoke", "requeueAfter", requeueTime)
 
 	if len(errs) > 0 {
 		return utilerrors.NewAggregate(errs)

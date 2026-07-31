@@ -45,7 +45,8 @@ func (m *manifestworkReconciler) reconcile(
 	manifestWork *workapiv1.ManifestWork,
 	appliedManifestWork *workapiv1.AppliedManifestWork,
 	_ []applyResult) (*workapiv1.ManifestWork, *workapiv1.AppliedManifestWork, []applyResult, error) {
-	logger := klog.FromContext(ctx)
+	logger := klog.FromContext(ctx).WithValues("manifestWork", manifestWork.Name, "reconciler", "manifestworkReconciler")
+	logger.V(0).Info("manifestworkReconciler: applying manifests to spoke cluster")
 	// We creat a ownerref instead of controller ref since multiple controller can declare the ownership of a manifests
 	owner := helper.NewAppliedManifestWorkOwner(appliedManifestWork)
 
@@ -128,6 +129,7 @@ func (m *manifestworkReconciler) reconcile(
 		)
 	}
 
+	logger.V(0).Info("manifestworkReconciler: apply pass finished", "manifestCount", len(resourceResults), "hasError", err != nil)
 	return manifestWork, appliedManifestWork, resourceResults, err
 }
 

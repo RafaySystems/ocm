@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/discovery"
 	corev1lister "k8s.io/client-go/listers/core/v1"
+	"k8s.io/klog/v2"
 
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
 	"open-cluster-management.io/sdk-go/pkg/basecontroller/factory"
@@ -22,18 +23,24 @@ type resoureReconcile struct {
 }
 
 func (r *resoureReconcile) reconcile(ctx context.Context, _ factory.SyncContext, cluster *clusterv1.ManagedCluster) (*clusterv1.ManagedCluster, reconcileState, error) {
+	logger := klog.FromContext(ctx).WithValues("managedCluster", cluster.Name, "reconciler", "resoureReconcile")
+	logger.V(0).Info("resourceReconcile: probing spoke kube-apiserver and aggregating node capacity")
+
 	// check the kube-apiserver health on managed cluster.
 	condition := r.checkKubeAPIServerStatus(ctx)
+	logger.V(0).Info("resourceReconcile: kube-apiserver probe done", "available", condition.Status == metav1.ConditionTrue, "reason", condition.Reason)
 
 	// the managed cluster kube-apiserver is health, update its version and resources if necessary.
 	if condition.Status == metav1.ConditionTrue {
 		clusterVersion, err := r.getClusterVersion()
 		if err != nil {
+			logger.Error(err, "resourceReconcile: ServerVersion failed")
 			return cluster, reconcileStop, fmt.Errorf("unable to get server version of managed cluster %q: %w", cluster.Name, err)
 		}
 
-		capacity, allocatable, err := r.getClusterResources()
+		capacity, allocatable, nodeCount, err := r.getClusterResources()
 		if err != nil {
+			logger.Error(err, "resourceReconcile: list nodes / aggregate resources failed")
 			return cluster, reconcileStop, fmt.Errorf("unable to get capacity and allocatable of managed cluster %q: %w", cluster.Name, err)
 		}
 
@@ -48,6 +55,13 @@ func (r *resoureReconcile) reconcile(ctx context.Context, _ factory.SyncContext,
 		cluster.Status.Capacity = capacity
 		cluster.Status.Allocatable = allocatable
 		cluster.Status.Version = *clusterVersion
+		logger.V(0).Info("resourceReconcile: refreshed hub-facing status from spoke",
+			"kubernetes", clusterVersion.Kubernetes,
+			"nodeCount", nodeCount,
+			"capacityResourceKinds", len(capacity),
+			"allocatableResourceKinds", len(allocatable))
+	} else {
+		logger.V(0).Info("resourceReconcile: kube-apiserver not healthy; skipping capacity/version sync", "message", condition.Message)
 	}
 
 	meta.SetStatusCondition(&cluster.Status.Conditions, condition)
@@ -98,11 +112,12 @@ func (r *resoureReconcile) getClusterVersion() (*clusterv1.ManagedClusterVersion
 	return &clusterv1.ManagedClusterVersion{Kubernetes: serverVersion.String()}, nil
 }
 
-func (r *resoureReconcile) getClusterResources() (capacity, allocatable clusterv1.ResourceList, err error) {
+func (r *resoureReconcile) getClusterResources() (capacity, allocatable clusterv1.ResourceList, nodeCount int, err error) {
 	nodes, err := r.nodeLister.List(labels.Everything())
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
+	nodeCount = len(nodes)
 
 	capacityList := make(map[clusterv1.ResourceName]resource.Quantity)
 	allocatableList := make(map[clusterv1.ResourceName]resource.Quantity)
@@ -132,5 +147,5 @@ func (r *resoureReconcile) getClusterResources() (capacity, allocatable clusterv
 		}
 	}
 
-	return capacityList, allocatableList, nil
+	return capacityList, allocatableList, nodeCount, nil
 }

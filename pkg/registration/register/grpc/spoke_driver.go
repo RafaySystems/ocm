@@ -296,7 +296,22 @@ func (d *GRPCDriver) loadConfig(secretOption register.SecretOption, bootstrapped
 		return nil, nil, err
 	}
 
+	d.applyInsecureSkipToGRPCOptions(config)
+
 	return config, configData, nil
+}
+
+// applyInsecureSkipToGRPCOptions sets InsecureSkipVerify on the dialer TLS config when enabled.
+// Only applies when the SDK has already built a *tls.Config (mTLS or token+TLS); plain-text gRPC is unchanged.
+func (d *GRPCDriver) applyInsecureSkipToGRPCOptions(config any) {
+	if d.opt == nil || !d.opt.InsecureSkipTLSVerify {
+		return
+	}
+	grpcOpts, ok := config.(*grpc.GRPCOptions)
+	if !ok || grpcOpts.Dialer == nil || grpcOpts.Dialer.TLSConfig == nil {
+		return
+	}
+	grpcOpts.Dialer.TLSConfig.InsecureSkipVerify = true
 }
 
 type ceCSRControl struct {
